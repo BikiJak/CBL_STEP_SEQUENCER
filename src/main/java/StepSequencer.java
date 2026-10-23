@@ -357,6 +357,8 @@ public class StepSequencer {
 
         FlatButton playButton = new FlatButton("Play", ACCENT, BG);
         FlatButton stopButton = new FlatButton("Stop", OFF_ALT, TEXT);
+        FlatButton clearButton = new FlatButton("Clear", OFF_ALT, TEXT);
+        clearButton.addActionListener(e -> clearPattern());
 
         playButton.addActionListener(e -> startPlayback());
         stopButton.addActionListener(e -> stopPlayback());
@@ -365,6 +367,7 @@ public class StepSequencer {
         left.setOpaque(false);
         left.add(playButton);
         left.add(stopButton);
+        left.add(clearButton);
 
         JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 12, 0));
         right.setOpaque(false);
@@ -406,6 +409,22 @@ public class StepSequencer {
                 cells[instrument][currentStep].setPlayhead(true);
             }
         });
+    }
+
+    private void clearPattern() {
+        synchronized (patternLock) {
+            for (int instrument = 0; instrument < 4; instrument++) {
+                for (int step = 0; step < 16; step++) {
+                    activeSteps[instrument][step] = false;
+                }
+            }
+        }
+
+        for (int instrument = 0; instrument < 4; instrument++) {
+            for (int step = 0; step < 16; step++) {
+                cells[instrument][step].setSelected(false);
+            }
+        }
     }
 
     // ---------------------------------------------------------------
