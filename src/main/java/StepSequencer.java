@@ -10,22 +10,39 @@ import javax.sound.sampled.Clip;
 import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.UnsupportedAudioFileException;
 
-/**
- * Threading model: - Swing thread (EDT): all UI components, currentStep,
- * playbackThread - Playback thread: reads activeSteps (patternLock), bpm
- * (volatile), plays clips (audioLock). - patternLock guards activeSteps. -
- * audioLock guards instrumentClips, nextVoice and closed.
- */
 public class StepSequencer {
 
+    // ---------------------------------------------------------------
+    // Theme
+    // ---------------------------------------------------------------
+    private static final Color BG = new Color(0x13131A);
+    private static final Color PANEL = new Color(0x1D1D27);
+    private static final Color OFF = new Color(0x262633);
+    private static final Color OFF_ALT = new Color(0x2F2F40);
+    private static final Color TEXT = new Color(0xE6E6F0);
+    private static final Color DIM = new Color(0x777789);
+    private static final Color ACCENT = new Color(0x3DDC97);
+
+    // Kick, Snare, Hi-hat, Clap
+    private static final Color[] INSTRUMENT_COLORS = {
+        new Color(0xFF5C8A),
+        new Color(0xFFB454),
+        new Color(0x4FD1C5),
+        new Color(0x8B7CF6)
+    };
+
+    private static final String FONT = Font.SANS_SERIF;
+
+    // ---------------------------------------------------------------
+    // State
+    // ---------------------------------------------------------------
     private volatile boolean playing = false;
     private volatile Thread playbackThread;
-    private JToggleButton[][] cells = new JToggleButton[4][16];
+    private StepButton[][] cells = new StepButton[4][16];
     private final Object patternLock = new Object();
     private final boolean[][] activeSteps = new boolean[4][16];
     private static final int VOICES_PER_INSTRUMENT = 4;
     private int currentStep = -1;
-    private final Color playheadColor = Color.YELLOW;
     private volatile int bpm = 120;
 
     @SuppressWarnings("unchecked")
@@ -67,6 +84,9 @@ public class StepSequencer {
     private boolean closed = false;
 
     public static void main(String[] args) {
+        System.setProperty("awt.useSystemAAFontSettings", "on");
+        System.setProperty("swing.aatext", "true");
+
         SwingUtilities.invokeLater(() -> {
             StepSequencer sequencer = new StepSequencer();
 
@@ -87,6 +107,9 @@ public class StepSequencer {
         });
     }
 
+    // ---------------------------------------------------------------
+    // Audio
+    // ---------------------------------------------------------------
     private Clip loadClip(String resourcePath)
             throws IOException, UnsupportedAudioFileException,
             LineUnavailableException {
@@ -208,6 +231,9 @@ public class StepSequencer {
         }
     }
 
+    // ---------------------------------------------------------------
+    // UI
+    // ---------------------------------------------------------------
     private void createWindow() {
         JFrame frame = new JFrame("Step Sequencer");
 
@@ -218,28 +244,37 @@ public class StepSequencer {
                 closeSamples();
             }
         });
-        frame.setSize(1000, 350);
+        frame.setSize(1100, 420);
+        frame.setMinimumSize(new Dimension(900, 340));
         frame.setLocationRelativeTo(null);
+        frame.getContentPane().setBackground(BG);
 
-        JPanel mainPanel = new JPanel(new GridLayout(4, 1, 5, 5));
-        mainPanel.setBorder(
-                BorderFactory.createEmptyBorder(15, 15, 15, 15)
-        );
+        JPanel mainPanel = new JPanel(new GridLayout(4, 1, 0, 10));
+        mainPanel.setOpaque(false);
 
         String[] instruments = {
             "Kick", "Snare", "Hi-hat", "Clap"
         };
 
         for (int j = 0; j < instruments.length; j++) {
-            String instrument = instruments[j];
             final int instrumentIndex = j;
-            JPanel row = new JPanel(new BorderLayout(10, 0));
+            Color accent = INSTRUMENT_COLORS[j];
 
-            JLabel label = new JLabel(instrument);
-            label.setFont(new Font("Arial", Font.BOLD, 14));
+            JPanel row = new JPanel(new BorderLayout(16, 0));
+            row.setOpaque(false);
+
+            JLabel label = new JLabel(instruments[j]);
+            label.setFont(new Font(FONT, Font.BOLD, 14));
+            label.setForeground(accent);
+            label.setPreferredSize(new Dimension(56, 30));
 
             JComboBox<String> sampleSelector
                     = new JComboBox<>(sampleNames[j]);
+            sampleSelector.setFont(new Font(FONT, Font.PLAIN, 13));
+            sampleSelector.setBackground(PANEL);
+            sampleSelector.setForeground(TEXT);
+            sampleSelector.setFocusable(false);
+            sampleSelector.setPreferredSize(new Dimension(112, 30));
 
             sampleSelectors[j] = sampleSelector;
 
@@ -260,41 +295,44 @@ public class StepSequencer {
                 }
             });
 
-            JPanel instrumentControls = new JPanel(
-                    new FlowLayout(FlowLayout.LEFT, 8, 0)
-            );
+            JPanel instrumentControls = new JPanel(new GridBagLayout());
+            instrumentControls.setOpaque(false);
+            instrumentControls.setPreferredSize(new Dimension(200, 35));
 
-            instrumentControls.setPreferredSize(new Dimension(230, 35));
-            instrumentControls.add(label);
-            instrumentControls.add(sampleSelector);
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.gridy = 0;
+            gbc.insets = new Insets(0, 0, 0, 10);
+            instrumentControls.add(label, gbc);
+            gbc.insets = new Insets(0, 0, 0, 0);
+            instrumentControls.add(sampleSelector, gbc);
 
-            JPanel steps = new JPanel(new GridLayout(1, 16, 4, 0));
+            JPanel steps = new JPanel(new GridLayout(1, 4, 16, 0));
+            steps.setOpaque(false);
 
-            for (int i = 0; i < 16; i++) {
-                JToggleButton cell = new JToggleButton();
+            for (int group = 0; group < 4; group++) {
+                JPanel groupPanel = new JPanel(new GridLayout(1, 4, 5, 0));
+                groupPanel.setOpaque(false);
 
-                cells[j][i] = cell;
-                final int stepIndex = i;
-                cell.setBackground(Color.LIGHT_GRAY);
-                cell.setOpaque(true);
-                cell.setBorderPainted(false);
-                cell.setFocusPainted(false);
+                for (int k = 0; k < 4; k++) {
+                    final int stepIndex = group * 4 + k;
+                    StepButton cell
+                            = new StepButton(accent, group % 2 == 0);
 
-                cell.addActionListener(e -> {
-                    boolean selected = cell.isSelected();
+                    cells[j][stepIndex] = cell;
 
-                    synchronized (patternLock) {
-                        activeSteps[instrumentIndex][stepIndex] = selected;
-                    }
+                    cell.addActionListener(e -> {
+                        boolean selected = cell.isSelected();
 
-                    if (selected) {
-                        cell.setBackground(Color.BLUE);
-                    } else {
-                        cell.setBackground(Color.LIGHT_GRAY);
-                    }
-                });
+                        synchronized (patternLock) {
+                            activeSteps[instrumentIndex][stepIndex]
+                                    = selected;
+                        }
+                    });
 
-                steps.add(cell);
+                    groupPanel.add(cell);
+                }
+
+                steps.add(groupPanel);
             }
 
             row.add(instrumentControls, BorderLayout.WEST);
@@ -303,31 +341,45 @@ public class StepSequencer {
         }
 
         JSlider tempoSlider = new JSlider(60, 200, 120);
-        JLabel tempoLabel = new JLabel("Tempo: 120 BPM");
-        tempoSlider.setMajorTickSpacing(20);
-        tempoSlider.setMinorTickSpacing(5);
-        tempoSlider.setPaintTicks(true);
-        tempoSlider.setPaintLabels(true);
+        tempoSlider.setOpaque(false);
+        tempoSlider.setFocusable(false);
+        tempoSlider.setPreferredSize(new Dimension(220, 30));
+
+        JLabel tempoLabel = new JLabel("120 BPM", SwingConstants.RIGHT);
+        tempoLabel.setFont(new Font(FONT, Font.BOLD, 16));
+        tempoLabel.setForeground(TEXT);
+        tempoLabel.setPreferredSize(new Dimension(90, 30));
 
         tempoSlider.addChangeListener(e -> {
             bpm = tempoSlider.getValue();
-            tempoLabel.setText("Tempo: " + bpm + " BPM");
+            tempoLabel.setText(bpm + " BPM");
         });
 
-        JButton playButton = new JButton("Play");
-        JButton stopButton = new JButton("Stop");
+        FlatButton playButton = new FlatButton("Play", ACCENT, BG);
+        FlatButton stopButton = new FlatButton("Stop", OFF_ALT, TEXT);
 
         playButton.addActionListener(e -> startPlayback());
         stopButton.addActionListener(e -> stopPlayback());
 
-        JPanel controls = new JPanel();
+        JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+        left.setOpaque(false);
+        left.add(playButton);
+        left.add(stopButton);
 
-        controls.add(tempoLabel);
-        controls.add(tempoSlider);
-        controls.add(playButton);
-        controls.add(stopButton);
+        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 12, 0));
+        right.setOpaque(false);
+        right.add(tempoSlider);
+        right.add(tempoLabel);
+
+        JPanel controls = new JPanel(new BorderLayout());
+        controls.setOpaque(false);
+        controls.setBorder(BorderFactory.createEmptyBorder(18, 0, 0, 0));
+        controls.add(left, BorderLayout.WEST);
+        controls.add(right, BorderLayout.EAST);
 
         JPanel content = new JPanel(new BorderLayout());
+        content.setBackground(BG);
+        content.setBorder(BorderFactory.createEmptyBorder(20, 24, 20, 24));
         content.add(mainPanel, BorderLayout.CENTER);
         content.add(controls, BorderLayout.SOUTH);
 
@@ -340,11 +392,7 @@ public class StepSequencer {
 
             if (currentStep != -1) {
                 for (int instrument = 0; instrument < 4; instrument++) {
-                    JToggleButton cell = cells[instrument][currentStep];
-
-                    cell.setBackground(cell.isSelected()
-                            ? Color.BLUE
-                            : Color.LIGHT_GRAY);
+                    cells[instrument][currentStep].setPlayhead(false);
                 }
             }
 
@@ -355,12 +403,14 @@ public class StepSequencer {
             }
 
             for (int instrument = 0; instrument < 4; instrument++) {
-                cells[instrument][currentStep]
-                        .setBackground(playheadColor);
+                cells[instrument][currentStep].setPlayhead(true);
             }
         });
     }
 
+    // ---------------------------------------------------------------
+    // Playback
+    // ---------------------------------------------------------------
     private void startPlayback() {
         Thread existing = playbackThread;
 
@@ -472,6 +522,122 @@ public class StepSequencer {
 
         for (Clip[] voices : toClose) {
             closeAll(voices);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Custom-painted components
+    // ---------------------------------------------------------------
+    private static Graphics2D aa(Graphics g) {
+        Graphics2D g2 = (Graphics2D) g.create();
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                RenderingHints.VALUE_ANTIALIAS_ON);
+        return g2;
+    }
+
+    private static Color blend(Color a, Color b, float t) {
+        return new Color(
+                Math.round(a.getRed() + (b.getRed() - a.getRed()) * t),
+                Math.round(a.getGreen() + (b.getGreen() - a.getGreen()) * t),
+                Math.round(a.getBlue() + (b.getBlue() - a.getBlue()) * t)
+        );
+    }
+
+    /**
+     * A rounded step cell.
+     */
+    private static class StepButton extends JToggleButton {
+
+        private final Color accent;
+        private final boolean lightOff;
+        private boolean playhead;
+
+        StepButton(Color accent, boolean lightOff) {
+            this.accent = accent;
+            this.lightOff = lightOff;
+            setOpaque(false);
+            setContentAreaFilled(false);
+            setBorderPainted(false);
+            setFocusPainted(false);
+            setFocusable(false);
+            setRolloverEnabled(true);
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        }
+
+        void setPlayhead(boolean value) {
+            if (playhead != value) {
+                playhead = value;
+                repaint();
+            }
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = aa(g);
+            int w = getWidth();
+            int h = getHeight();
+            int arc = 12;
+
+            Color base = isSelected() ? accent : (lightOff ? OFF_ALT : OFF);
+
+            if (getModel().isRollover()) {
+                base = blend(base, Color.WHITE, isSelected() ? 0.15f : 0.08f);
+            }
+
+            g2.setColor(base);
+            g2.fillRoundRect(0, 0, w, h, arc, arc);
+
+            if (playhead) {
+                g2.setColor(new Color(255, 255, 255,
+                        isSelected() ? 110 : 45));
+                g2.fillRoundRect(0, 0, w, h, arc, arc);
+                g2.setColor(new Color(255, 255, 255, 200));
+                g2.setStroke(new BasicStroke(2f));
+                g2.drawRoundRect(1, 1, w - 3, h - 3, arc, arc);
+            }
+
+            g2.dispose();
+        }
+    }
+
+    /**
+     * Flat rounded button for Play / Stop.
+     */
+    private static class FlatButton extends JButton {
+
+        private final Color bg;
+
+        FlatButton(String text, Color bg, Color fg) {
+            super(text);
+            this.bg = bg;
+            setForeground(fg);
+            setFont(new Font(FONT, Font.BOLD, 13));
+            setOpaque(false);
+            setContentAreaFilled(false);
+            setBorderPainted(false);
+            setFocusPainted(false);
+            setFocusable(false);
+            setRolloverEnabled(true);
+            setPreferredSize(new Dimension(92, 36));
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = aa(g);
+            Color c = bg;
+
+            if (getModel().isPressed()) {
+                c = blend(bg, Color.BLACK, 0.2f);
+            } else if (getModel().isRollover()) {
+                c = blend(bg, Color.WHITE, 0.12f);
+            }
+
+            g2.setColor(c);
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 12, 12);
+            g2.dispose();
+
+            super.paintComponent(g);
         }
     }
 }
