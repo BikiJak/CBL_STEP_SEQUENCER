@@ -18,7 +18,7 @@ Users can adjust the tempo and choose between different audio samples for each i
 
 ## Requirements
 
-- Java Development Kit (JDK): 25
+- Java Development Kit (JDK): 25 or newer
 - Apache Maven
 - The project's audio samples, included in the resources directory
 
