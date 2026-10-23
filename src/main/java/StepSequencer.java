@@ -10,17 +10,25 @@ import javax.sound.sampled.Clip;
 import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.UnsupportedAudioFileException;
 
+/**
+ * Threading model: - Swing thread (EDT): all UI components, currentStep,
+ * playbackThread - Playback thread: reads activeSteps (patternLock), bpm
+ * (volatile), plays clips (audioLock). - patternLock guards activeSteps. -
+ * audioLock guards instrumentClips, nextVoice and closed.
+ */
 public class StepSequencer {
 
     private volatile boolean playing = false;
-    private Thread playbackThread;
+    private volatile Thread playbackThread;
     private JToggleButton[][] cells = new JToggleButton[4][16];
     private final Object patternLock = new Object();
     private final boolean[][] activeSteps = new boolean[4][16];
     private static final int VOICES_PER_INSTRUMENT = 4;
     private int currentStep = -1;
-    private Color playheadColor = Color.YELLOW;
+    private final Color playheadColor = Color.YELLOW;
     private volatile int bpm = 120;
+
+    @SuppressWarnings("unchecked")
     private JComboBox<String>[] sampleSelectors = new JComboBox[4];
 
     private final String[][] samplePaths = {
@@ -53,10 +61,10 @@ public class StepSequencer {
         {"Clap 1", "Clap 2", "Clap 3"}
     };
 
-    private Clip[][] instrumentClips
-            = new Clip[4][VOICES_PER_INSTRUMENT];
-
-    private int[] nextVoice = new int[4];
+    private final Object audioLock = new Object();
+    private final Clip[][] instrumentClips = new Clip[4][];
+    private final int[] nextVoice = new int[4];
+    private boolean closed = false;
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
@@ -143,39 +151,60 @@ public class StepSequencer {
             }
         } catch (IOException | UnsupportedAudioFileException
                 | LineUnavailableException | RuntimeException e) {
-
-            for (Clip clip : newVoices) {
-                if (clip != null) {
-                    clip.close();
-                }
-            }
-
+            closeAll(newVoices);
             throw e;
         }
 
-        for (int voice = 0; voice < VOICES_PER_INSTRUMENT; voice++) {
-            if (instrumentClips[instrument][voice] != null) {
-                instrumentClips[instrument][voice].close();
-            }
+        Clip[] oldVoices;
 
-            instrumentClips[instrument][voice] = newVoices[voice];
+        synchronized (audioLock) {
+            if (closed) {
+                oldVoices = newVoices;
+            } else {
+                oldVoices = instrumentClips[instrument];
+                instrumentClips[instrument] = newVoices;
+                nextVoice[instrument] = 0;
+            }
         }
 
-        nextVoice[instrument] = 0;
+        closeAll(oldVoices);
+    }
+
+    private static void closeAll(Clip[] clips) {
+        if (clips == null) {
+            return;
+        }
+
+        for (Clip clip : clips) {
+            if (clip != null) {
+                clip.close();
+            }
+        }
     }
 
     private void playClip(int instrument) {
-        int voice = nextVoice[instrument];
 
-        Clip clip = instrumentClips[instrument][voice];
+        synchronized (audioLock) {
+            if (closed) {
+                return;
+            }
 
-        nextVoice[instrument]
-                = (voice + 1) % VOICES_PER_INSTRUMENT;
+            Clip[] voices = instrumentClips[instrument];
 
-        if (clip != null) {
-            clip.stop();
-            clip.setFramePosition(0);
-            clip.start();
+            if (voices == null) {
+                return;
+            }
+
+            int voice = nextVoice[instrument];
+            nextVoice[instrument] = (voice + 1) % VOICES_PER_INSTRUMENT;
+
+            Clip clip = voices[voice];
+
+            if (clip != null) {
+                clip.stop();
+                clip.setFramePosition(0);
+                clip.start();
+            }
         }
     }
 
@@ -308,7 +337,7 @@ public class StepSequencer {
 
     private void updatePlayhead(int newStep) {
         SwingUtilities.invokeLater(() -> {
-            // Restore the previous column's normal colors.
+
             if (currentStep != -1) {
                 for (int instrument = 0; instrument < 4; instrument++) {
                     JToggleButton cell = cells[instrument][currentStep];
@@ -321,12 +350,10 @@ public class StepSequencer {
 
             currentStep = newStep;
 
-            // A value of -1 means playback has stopped.
             if (currentStep == -1) {
                 return;
             }
 
-            // Highlight the current column.
             for (int instrument = 0; instrument < 4; instrument++) {
                 cells[instrument][currentStep]
                         .setBackground(playheadColor);
@@ -335,9 +362,9 @@ public class StepSequencer {
     }
 
     private void startPlayback() {
-        // Do not start a second playback thread while one is still running.
-        if (playing || (playbackThread != null
-                && playbackThread.isAlive())) {
+        Thread existing = playbackThread;
+
+        if (playing || (existing != null && existing.isAlive())) {
             return;
         }
 
@@ -347,14 +374,16 @@ public class StepSequencer {
             selector.setEnabled(false);
         }
 
-        playbackThread = new Thread(this::runPlayback,
+        Thread thread = new Thread(this::runPlayback,
                 "StepSequencer-Playback");
-
-        playbackThread.start();
+        thread.setDaemon(true);
+        playbackThread = thread;
+        thread.start();
     }
 
     private void runPlayback() {
         Thread thisThread = Thread.currentThread();
+        boolean[] hits = new boolean[4];
 
         try {
             int step = 0;
@@ -363,14 +392,14 @@ public class StepSequencer {
             while (playing) {
                 updatePlayhead(step);
 
-                for (int instrument = 0; instrument < 4; instrument++) {
-                    boolean active;
-
-                    synchronized (patternLock) {
-                        active = activeSteps[instrument][step];
+                synchronized (patternLock) {
+                    for (int instrument = 0; instrument < 4; instrument++) {
+                        hits[instrument] = activeSteps[instrument][step];
                     }
+                }
 
-                    if (active) {
+                for (int instrument = 0; instrument < 4; instrument++) {
+                    if (hits[instrument]) {
                         playClip(instrument);
                     }
                 }
@@ -399,7 +428,7 @@ public class StepSequencer {
             playing = false;
 
             SwingUtilities.invokeLater(() -> {
-                // Only the current playback thread may update the interface.
+
                 if (playbackThread == thisThread) {
                     updatePlayhead(-1);
 
@@ -414,24 +443,35 @@ public class StepSequencer {
     private void stopPlayback() {
         playing = false;
 
-        if (playbackThread != null) {
-            playbackThread.interrupt();
+        Thread thread = playbackThread;
+
+        if (thread != null) {
+            thread.interrupt();
         }
     }
 
     private void closeSamples() {
         playing = false;
 
-        if (playbackThread != null) {
-            playbackThread.interrupt();
+        Thread thread = playbackThread;
+
+        if (thread != null) {
+            thread.interrupt();
         }
 
-        for (Clip[] voices : instrumentClips) {
-            for (Clip clip : voices) {
-                if (clip != null) {
-                    clip.close();
-                }
+        Clip[][] toClose = new Clip[4][];
+
+        synchronized (audioLock) {
+            closed = true;
+
+            for (int i = 0; i < 4; i++) {
+                toClose[i] = instrumentClips[i];
+                instrumentClips[i] = null;
             }
+        }
+
+        for (Clip[] voices : toClose) {
+            closeAll(voices);
         }
     }
 }
