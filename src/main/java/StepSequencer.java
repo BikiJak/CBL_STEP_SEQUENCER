@@ -15,10 +15,43 @@ public class StepSequencer {
     private volatile boolean playing = false;
     private Thread playbackThread;
     private JToggleButton[][] cells = new JToggleButton[4][16];
+    private final Object patternLock = new Object();
+    private final boolean[][] activeSteps = new boolean[4][16];
     private static final int VOICES_PER_INSTRUMENT = 4;
     private int currentStep = -1;
     private Color playheadColor = Color.YELLOW;
     private volatile int bpm = 120;
+    private JComboBox<String>[] sampleSelectors = new JComboBox[4];
+
+    private final String[][] samplePaths = {
+        {
+            "/samples/kicks/Kick 1.wav",
+            "/samples/kicks/Kick 2.wav",
+            "/samples/kicks/Kick 3.wav"
+        },
+        {
+            "/samples/snares/Snare 1.wav",
+            "/samples/snares/Snare 2.wav",
+            "/samples/snares/Snare 3.wav"
+        },
+        {
+            "/samples/hi-hats/Hi-Hat 1.wav",
+            "/samples/hi-hats/Hi-Hat 2.wav",
+            "/samples/hi-hats/Hi-Hat 3.wav"
+        },
+        {
+            "/samples/claps/Clap 1.wav",
+            "/samples/claps/Clap 2.wav",
+            "/samples/claps/Clap 3.wav"
+        }
+    };
+
+    private final String[][] sampleNames = {
+        {"Kick 1", "Kick 2", "Kick 3"},
+        {"Snare 1", "Snare 2", "Snare 3"},
+        {"Hi-Hat 1", "Hi-Hat 2", "Hi-Hat 3"},
+        {"Clap 1", "Clap 2", "Clap 3"}
+    };
 
     private Clip[][] instrumentClips
             = new Clip[4][VOICES_PER_INSTRUMENT];
@@ -92,19 +125,43 @@ public class StepSequencer {
             throws IOException, UnsupportedAudioFileException,
             LineUnavailableException {
 
-        String[] samplePaths = {
-            "/samples/kicks/Kick 1.wav",
-            "/samples/snares/Snare 1.wav",
-            "/samples/hi-hats/Hi-Hat 1.wav",
-            "/samples/claps/Clap 1.wav"
-        };
-
         for (int instrument = 0; instrument < 4; instrument++) {
-            for (int voice = 0; voice < VOICES_PER_INSTRUMENT; voice++) {
-                instrumentClips[instrument][voice]
-                        = loadClip(samplePaths[instrument]);
-            }
+            loadInstrumentSamples(instrument, 0);
         }
+    }
+
+    private void loadInstrumentSamples(int instrument, int sampleIndex)
+            throws IOException, UnsupportedAudioFileException,
+            LineUnavailableException {
+
+        Clip[] newVoices = new Clip[VOICES_PER_INSTRUMENT];
+
+        try {
+            for (int voice = 0; voice < VOICES_PER_INSTRUMENT; voice++) {
+                newVoices[voice]
+                        = loadClip(samplePaths[instrument][sampleIndex]);
+            }
+        } catch (IOException | UnsupportedAudioFileException
+                | LineUnavailableException | RuntimeException e) {
+
+            for (Clip clip : newVoices) {
+                if (clip != null) {
+                    clip.close();
+                }
+            }
+
+            throw e;
+        }
+
+        for (int voice = 0; voice < VOICES_PER_INSTRUMENT; voice++) {
+            if (instrumentClips[instrument][voice] != null) {
+                instrumentClips[instrument][voice].close();
+            }
+
+            instrumentClips[instrument][voice] = newVoices[voice];
+        }
+
+        nextVoice[instrument] = 0;
     }
 
     private void playClip(int instrument) {
@@ -126,6 +183,12 @@ public class StepSequencer {
         JFrame frame = new JFrame("Step Sequencer");
 
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override
+            public void windowClosing(java.awt.event.WindowEvent e) {
+                closeSamples();
+            }
+        });
         frame.setSize(1000, 350);
         frame.setLocationRelativeTo(null);
 
@@ -140,11 +203,41 @@ public class StepSequencer {
 
         for (int j = 0; j < instruments.length; j++) {
             String instrument = instruments[j];
+            final int instrumentIndex = j;
             JPanel row = new JPanel(new BorderLayout(10, 0));
 
             JLabel label = new JLabel(instrument);
-            label.setPreferredSize(new Dimension(110, 35));
             label.setFont(new Font("Arial", Font.BOLD, 14));
+
+            JComboBox<String> sampleSelector
+                    = new JComboBox<>(sampleNames[j]);
+
+            sampleSelectors[j] = sampleSelector;
+
+            sampleSelector.addActionListener(e -> {
+                try {
+                    loadInstrumentSamples(
+                            instrumentIndex, sampleSelector.getSelectedIndex()
+                    );
+                } catch (IOException | UnsupportedAudioFileException
+                        | LineUnavailableException ex) {
+
+                    JOptionPane.showMessageDialog(
+                            null,
+                            "Could not load sample: " + ex.getMessage(),
+                            "Audio Error",
+                            JOptionPane.ERROR_MESSAGE
+                    );
+                }
+            });
+
+            JPanel instrumentControls = new JPanel(
+                    new FlowLayout(FlowLayout.LEFT, 8, 0)
+            );
+
+            instrumentControls.setPreferredSize(new Dimension(230, 35));
+            instrumentControls.add(label);
+            instrumentControls.add(sampleSelector);
 
             JPanel steps = new JPanel(new GridLayout(1, 16, 4, 0));
 
@@ -152,13 +245,20 @@ public class StepSequencer {
                 JToggleButton cell = new JToggleButton();
 
                 cells[j][i] = cell;
+                final int stepIndex = i;
                 cell.setBackground(Color.LIGHT_GRAY);
                 cell.setOpaque(true);
                 cell.setBorderPainted(false);
                 cell.setFocusPainted(false);
 
                 cell.addActionListener(e -> {
-                    if (cell.isSelected()) {
+                    boolean selected = cell.isSelected();
+
+                    synchronized (patternLock) {
+                        activeSteps[instrumentIndex][stepIndex] = selected;
+                    }
+
+                    if (selected) {
                         cell.setBackground(Color.BLUE);
                     } else {
                         cell.setBackground(Color.LIGHT_GRAY);
@@ -168,14 +268,13 @@ public class StepSequencer {
                 steps.add(cell);
             }
 
-            row.add(label, BorderLayout.WEST);
+            row.add(instrumentControls, BorderLayout.WEST);
             row.add(steps, BorderLayout.CENTER);
             mainPanel.add(row);
         }
 
         JSlider tempoSlider = new JSlider(60, 200, 120);
         JLabel tempoLabel = new JLabel("Tempo: 120 BPM");
-
         tempoSlider.setMajorTickSpacing(20);
         tempoSlider.setMinorTickSpacing(5);
         tempoSlider.setPaintTicks(true);
@@ -236,24 +335,42 @@ public class StepSequencer {
     }
 
     private void startPlayback() {
-        if (playing) {
+        // Do not start a second playback thread while one is still running.
+        if (playing || (playbackThread != null
+                && playbackThread.isAlive())) {
             return;
         }
 
         playing = true;
 
-        playbackThread = new Thread(() -> {
-            int step = 0;
+        for (JComboBox<String> selector : sampleSelectors) {
+            selector.setEnabled(false);
+        }
 
-            // 120 BPM, with 16 steps per bar.
-            long stepDuration = 60_000_000_000L / (bpm * 4L);
+        playbackThread = new Thread(this::runPlayback,
+                "StepSequencer-Playback");
+
+        playbackThread.start();
+    }
+
+    private void runPlayback() {
+        Thread thisThread = Thread.currentThread();
+
+        try {
+            int step = 0;
             long nextStepTime = System.nanoTime();
 
             while (playing) {
                 updatePlayhead(step);
 
                 for (int instrument = 0; instrument < 4; instrument++) {
-                    if (cells[instrument][step].isSelected()) {
+                    boolean active;
+
+                    synchronized (patternLock) {
+                        active = activeSteps[instrument][step];
+                    }
+
+                    if (active) {
                         playClip(instrument);
                     }
                 }
@@ -278,9 +395,20 @@ public class StepSequencer {
                     nextStepTime = System.nanoTime();
                 }
             }
-        });
+        } finally {
+            playing = false;
 
-        playbackThread.start();
+            SwingUtilities.invokeLater(() -> {
+                // Only the current playback thread may update the interface.
+                if (playbackThread == thisThread) {
+                    updatePlayhead(-1);
+
+                    for (JComboBox<String> selector : sampleSelectors) {
+                        selector.setEnabled(true);
+                    }
+                }
+            });
+        }
     }
 
     private void stopPlayback() {
@@ -289,7 +417,21 @@ public class StepSequencer {
         if (playbackThread != null) {
             playbackThread.interrupt();
         }
+    }
 
-        updatePlayhead(-1);
+    private void closeSamples() {
+        playing = false;
+
+        if (playbackThread != null) {
+            playbackThread.interrupt();
+        }
+
+        for (Clip[] voices : instrumentClips) {
+            for (Clip clip : voices) {
+                if (clip != null) {
+                    clip.close();
+                }
+            }
+        }
     }
 }
